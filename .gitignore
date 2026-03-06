@@ -28,13 +28,11 @@ auths/*
 # Documentation
 docs/*
 AGENTS.md
-CLAUDE.md
 GEMINI.md
 
 # Tooling metadata
 .vscode/*
 .codex/*
-.claude/*
 .gemini/*
 .serena/*
 .agent/*
@@ -43,8 +41,6 @@ GEMINI.md
 .opencode/*
 .idea/*
 .bmad/*
-_bmad/*
-_bmad-output/*
 
 # macOS
 .DS_Store
