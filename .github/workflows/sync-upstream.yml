@@ -1,0 +1,176 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每日 6:00 UTC 执行
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # 支持手动触发
+    inputs:
+      branch:
+        description: "Target branch to sync into"
+        required: false
+        default: "codefree"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream-${{ github.event.inputs.branch || 'codefree' }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: "router-for-me/CLIProxyAPI"
+  UPSTREAM_BRANCH: "main"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream
+
+      - name: Get target branch
+        id: branch
+        run: |
+          TARGET_BRANCH="${{ github.event.inputs.branch || 'codefree' }}"
+          echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+          git checkout "$TARGET_BRANCH" || git checkout -b "$TARGET_BRANCH"
+
+      - name: Merge upstream changes
+        id: merge
+        run: |
+          echo "::group::Fetching upstream changes"
+          git log --oneline HEAD..upstream/${{ env.UPSTREAM_BRANCH }} 2>/dev/null || echo "No new commits from upstream"
+          echo "::endgroup::"
+
+          # 记录合并前的 commit hash
+          BEFORE_COMMIT=$(git rev-parse HEAD)
+          echo "before_commit=$BEFORE_COMMIT" >> $GITHUB_OUTPUT
+
+          # 尝试合并上游变更
+          if git merge upstream/${{ env.UPSTREAM_BRANCH }} --no-edit; then
+            echo "merge_strategy=merge" >> $GITHUB_OUTPUT
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+            echo "✅ Merge successful"
+          else
+            # 合并冲突，尝试变基
+            echo "::warning::Merge conflict detected, attempting rebase"
+            git merge --abort || true
+            if git rebase upstream/${{ env.UPSTREAM_BRANCH }}; then
+              echo "merge_strategy=rebase" >> $GITHUB_OUTPUT
+              echo "merge_status=success" >> $GITHUB_OUTPUT
+              echo "✅ Rebase successful"
+            else
+              echo "merge_status=conflict" >> $GITHUB_OUTPUT
+              echo "::error::Rebase failed, manual intervention required"
+              git rebase --abort || true
+              exit 1
+            fi
+          fi
+
+      - name: Setup Go
+        if: steps.merge.outputs.merge_status == 'success'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Run tests (go build)
+        if: steps.merge.outputs.merge_status == 'success'
+        run: |
+          echo "::group::Downloading dependencies"
+          go mod download
+          echo "::endgroup::"
+
+          echo "::group::Running go build"
+          if go build -o /tmp/cliproxyapi-test ./cmd/server; then
+            echo "✅ Build successful"
+            rm -f /tmp/cliproxyapi-test
+          else
+            echo "::error::Build failed after merging upstream changes"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      - name: Check for changes
+        id: changes
+        if: steps.merge.outputs.merge_status == 'success'
+        run: |
+          # 使用 merge 前的 commit 作为基准进行比较
+          BEFORE_COMMIT="${{ steps.merge.outputs.before_commit }}"
+          if [ -z "$BEFORE_COMMIT" ]; then
+            # 如果没有记录，使用 upstream 分支作为基准
+            BEFORE_COMMIT="upstream/${{ env.UPSTREAM_BRANCH }}"
+          fi
+
+          if git diff --quiet "$BEFORE_COMMIT"; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes to commit"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            CHANGED_FILES=$(git diff --name-only "$BEFORE_COMMIT" | tr '\n' ' ')
+            echo "changed_files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+            echo "Changes detected: $CHANGED_FILES"
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          MERGE_STRATEGY="${{ steps.merge.outputs.merge_strategy }}"
+          if [ "$MERGE_STRATEGY" = "rebase" ]; then
+            git push origin ${{ steps.branch.outputs.target_branch }} --force-with-lease
+            echo "✅ Force pushed (rebase) to ${{ steps.branch.outputs.target_branch }}"
+          else
+            git push origin ${{ steps.branch.outputs.target_branch }}
+            echo "✅ Pushed to ${{ steps.branch.outputs.target_branch }}"
+          fi
+
+      - name: Create failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date().toISOString();
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🔴 上游同步失败 - 需要手动处理',
+              body: `
+            ## 同步失败详情
+
+            **时间:** ${now}
+            **分支:** ${{ steps.branch.outputs.target_branch }}
+            **上游仓库:** ${{ env.UPSTREAM_REPO }}
+            **上游分支:** ${{ env.UPSTREAM_BRANCH }}
+
+            ### 需要操作
+
+            请手动解决合并冲突后重新运行同步。
+
+            \`\`\`bash
+            git fetch upstream
+            git rebase upstream/${{ env.UPSTREAM_BRANCH }}
+            # 解决冲突后
+            git rebase --continue
+            git push origin ${{ steps.branch.outputs.target_branch }} --force
+            \`\`\`
+
+            ---
+            *此 Issue 由 GitHub Actions 自动创建*
+              `,
+              labels: ['sync', 'upstream', 'needs-attention']
+            });
