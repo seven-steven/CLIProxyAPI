@@ -68,6 +68,10 @@ func (m *managementTokenRequester) RequestIFlowCookieToken(c *gin.Context) {
 	m.handler.RequestIFlowCookieToken(c)
 }
 
+func (m *managementTokenRequester) RequestCodefreeToken(c *gin.Context) {
+	m.handler.RequestCodefreeToken(c)
+}
+
 func (m *managementTokenRequester) GetAuthStatus(c *gin.Context) {
 	m.handler.GetAuthStatus(c)
 }

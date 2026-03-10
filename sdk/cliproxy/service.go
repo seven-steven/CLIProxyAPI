@@ -850,6 +850,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
+	case "codefree":
+		models = s.fetchCodefreeModels(a)
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -1134,6 +1137,40 @@ func (s *Service) backfillAntigravityModels(source *coreauth.Auth, primaryModels
 		reg.RegisterClient(candidateID, "antigravity", applyModelPrefixes(models, candidate.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		log.Debugf("antigravity models backfilled for auth %s using primary model list", candidateID)
 	}
+}
+
+// fetchCodefreeModels 从 auth metadata 获取 codefree 模型列表
+func (s *Service) fetchCodefreeModels(a *coreauth.Auth) []*ModelInfo {
+	var models []*ModelInfo
+	if a == nil || a.Metadata == nil {
+		return models
+	}
+
+	if modelsRaw, ok := a.Metadata["models"]; ok {
+		if modelInfos, ok := modelsRaw.([]interface{}); ok {
+			now := time.Now().Unix()
+			for _, m := range modelInfos {
+				if modelMap, ok := m.(map[string]interface{}); ok {
+					name, _ := modelMap["modelName"].(string)
+					if name == "" {
+						continue
+					}
+					manufacturer, _ := modelMap["manufacturer"].(string)
+					models = append(models, &ModelInfo{
+						ID:          name,
+						Name:        name,
+						Object:      "model",
+						Created:     now,
+						OwnedBy:     manufacturer,
+						Type:        "codefree",
+						DisplayName: name,
+						UserDefined: true,
+					})
+				}
+			}
+		}
+	}
+	return models
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {

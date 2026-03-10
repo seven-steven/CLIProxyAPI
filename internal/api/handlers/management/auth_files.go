@@ -28,6 +28,7 @@ import (
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codefree"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -2461,6 +2462,146 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "wait"})
+}
+
+// RequestCodefreeToken 启动 Codefree OAuth 登录流程
+func (h *Handler) RequestCodefreeToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Codefree authentication...")
+
+	// 初始化 Codefree auth service
+	codefreeAuth := codefree.NewCodefreeAuth(h.cfg)
+
+	// 启动本地回调服务器（WebUI 和 CLI 模式都需要）
+	oauthServer := codefree.NewCodefreeOAuthServer()
+	if err := oauthServer.Start(); err != nil {
+		log.Errorf("Failed to start OAuth server: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start oauth server"})
+		return
+	}
+
+	// 构建带回调的 state 参数
+	randomCode, err := codefree.GenerateRandomCode()
+	if err != nil {
+		log.Errorf("Failed to generate random code: %v", err)
+		_ = oauthServer.Stop(context.Background())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate random code"})
+		return
+	}
+	oauthServer.SetExpectedRandomCode(randomCode)
+
+	// 使用 OAuth Server 的 BuildStateParam 方法构建 state
+	state := oauthServer.BuildStateParam(randomCode)
+	authURL := codefreeAuth.GenerateAuthURL(state)
+
+	RegisterOAuthSession(state, "codefree")
+
+	// 检查是否是 WebUI 模式
+	isWebUI := c.Query("is_webui") == "true"
+	var forwarder *callbackForwarder
+	if isWebUI {
+		port := oauthServer.GetPort()
+		targetURL, errTarget := h.managementCallbackURL("/codefree/callback")
+		if errTarget != nil {
+			log.WithError(errTarget).Error("failed to compute codefree callback target")
+			_ = oauthServer.Stop(context.Background())
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "callback server unavailable"})
+			return
+		}
+		var errStart error
+		if forwarder, errStart = startCallbackForwarder(port, "codefree", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start codefree callback forwarder")
+			_ = oauthServer.Stop(context.Background())
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to start callback server"})
+			return
+		}
+	}
+
+	// 返回授权 URL
+	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+
+	// 启动后台等待流程
+	go func() {
+		defer func() {
+			_ = oauthServer.Stop(context.Background())
+			if forwarder != nil {
+				stopCallbackForwarderInstance(oauthServer.GetPort(), forwarder)
+			}
+		}()
+
+		fmt.Println("Waiting for authentication...")
+		result, errWait := oauthServer.WaitForCallback(5 * time.Minute)
+		if errWait != nil {
+			SetOAuthSessionError(state, "Authentication timeout")
+			fmt.Printf("Authentication timeout: %v\n", errWait)
+			return
+		}
+
+		// 交换 code 获取 token
+		tokenResp, errExchange := codefreeAuth.ExchangeCodeForTokens(result.Code)
+		if errExchange != nil {
+			SetOAuthSessionError(state, "Token exchange failed")
+			fmt.Printf("Token exchange failed: %v\n", errExchange)
+			return
+		}
+
+		// 获取 API Key
+		apiKey, errAPIKey := codefreeAuth.FetchAPIKey(tokenResp.AccessToken, tokenResp.GetUserID())
+		if errAPIKey != nil {
+			log.Warnf("Failed to fetch API key (non-fatal): %v", errAPIKey)
+		}
+
+		// 获取模型列表
+		cliVersion := h.cfg.CodefreeCliVersion
+		if cliVersion == "" {
+			cliVersion = "0.3.4"
+		}
+		decryptedAPIKey := apiKey
+		if apiKey != "" {
+			if decrypted, err := codefree.DecryptAPIKey(apiKey); err == nil && decrypted != "" {
+				decryptedAPIKey = decrypted
+			}
+		}
+		models, errModels := codefreeAuth.FetchModels(tokenResp.GetUserID(), decryptedAPIKey, cliVersion)
+		if errModels != nil {
+			log.Warnf("Failed to fetch models (non-fatal): %v", errModels)
+		}
+
+		// 创建凭据文件
+		storage := &codefree.CodefreeTokenStorage{
+			Type:        "codefree",
+			AccessToken: tokenResp.AccessToken,
+			IDToken:     tokenResp.GetUserID(),
+			APIKey:      apiKey,
+			ExpiresIn:   tokenResp.ExpiresIn,
+			BaseURL:     codefree.BaseURL,
+			TokenType:   tokenResp.TokenType,
+			Models:      models,
+		}
+
+		authDir := h.cfg.AuthDir
+		fileName := "codefree.json"
+		filePath := filepath.Join(authDir, fileName)
+
+		// 确保目录存在
+		if err := os.MkdirAll(authDir, 0755); err != nil {
+			SetOAuthSessionError(state, "Failed to create auth directory")
+			fmt.Printf("Failed to create auth directory: %v\n", err)
+			return
+		}
+
+		if err := storage.SaveTokenToFile(filePath); err != nil {
+			SetOAuthSessionError(state, "Failed to save credentials")
+			fmt.Printf("Failed to save credentials: %v\n", err)
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", filePath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("codefree")
+	}()
 }
 
 // PopulateAuthContext extracts request info and adds it to the context

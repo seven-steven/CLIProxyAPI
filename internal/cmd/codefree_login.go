@@ -98,6 +98,23 @@ func DoCodefreeLogin(cfg *config.Config, manualMode bool) {
 			// 不返回，继续保存凭据
 		}
 
+		// 获取模型列表 (可选步骤，失败时继续)
+		cliVersion := cfg.CodefreeCliVersion
+		if cliVersion == "" {
+			cliVersion = "0.3.4"
+		}
+		// 解密 API Key 用于获取模型列表
+		decryptedAPIKey := apiKey
+		if apiKey != "" {
+			if decrypted, err := codefree.DecryptAPIKey(apiKey); err == nil && decrypted != "" {
+				decryptedAPIKey = decrypted
+			}
+		}
+		models, err := auth.FetchModels(tokenResp.GetUserID(), decryptedAPIKey, cliVersion)
+		if err != nil {
+			log.Warnf("Failed to fetch models (non-fatal): %v", err)
+		}
+
 		// 保存凭据
 		storage := &codefree.CodefreeTokenStorage{
 			Type:        "codefree",
@@ -107,6 +124,7 @@ func DoCodefreeLogin(cfg *config.Config, manualMode bool) {
 			ExpiresIn:   tokenResp.ExpiresIn,
 			BaseURL:     codefree.BaseURL,
 			TokenType:   tokenResp.TokenType,
+			Models:      models,
 		}
 
 		if err := storage.SaveTokenToFile(authFilePath); err != nil {
@@ -159,6 +177,23 @@ func DoCodefreeLogin(cfg *config.Config, manualMode bool) {
 		// 不返回，继续保存凭据
 	}
 
+	// 获取模型列表 (可选步骤，失败时继续)
+	cliVersion := cfg.CodefreeCliVersion
+	if cliVersion == "" {
+		cliVersion = "0.3.4"
+	}
+	// 解密 API Key 用于获取模型列表
+	decryptedAPIKey := apiKey
+	if apiKey != "" {
+		if decrypted, err := codefree.DecryptAPIKey(apiKey); err == nil && decrypted != "" {
+			decryptedAPIKey = decrypted
+		}
+	}
+	models, err := auth.FetchModels(tokenResp.GetUserID(), decryptedAPIKey, cliVersion)
+	if err != nil {
+		log.Warnf("Failed to fetch models (non-fatal): %v", err)
+	}
+
 	// 保存凭据
 	storage := &codefree.CodefreeTokenStorage{
 		Type:        "codefree",
@@ -168,6 +203,7 @@ func DoCodefreeLogin(cfg *config.Config, manualMode bool) {
 		ExpiresIn:   tokenResp.ExpiresIn,
 		BaseURL:     codefree.BaseURL,
 		TokenType:   tokenResp.TokenType,
+		Models:      models,
 	}
 
 	if err := storage.SaveTokenToFile(authFilePath); err != nil {

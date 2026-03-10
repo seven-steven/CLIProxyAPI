@@ -39,9 +39,32 @@ type CodefreeTokenStorage struct {
 
 	// Metadata 保存任意键值对
 	Metadata map[string]any `json:"-"`
+
+	// DecryptedAPIKey 是解密后的 UUID 格式 API 寁钥（运行时计算）
+	DecryptedAPIKey string `json:"-"`
+
+	// Models 是可用模型列表
+	Models []ModelInfo `json:"models,omitempty"`
 }
 
-// Validate 校验凭据文件的必填字段
+// GetDecryptedAPIKey 获取解密后的 UUID 格式 API 密钥
+// 如果已解密则返回缓存值，否则进行解密
+func (ts *CodefreeTokenStorage) GetDecryptedAPIKey() string {
+	if ts.DecryptedAPIKey != "" {
+		return ts.DecryptedAPIKey
+	}
+
+	// 解密 encryptedApiKey
+	decrypted, err := DecryptAPIKey(ts.APIKey)
+	if err != nil {
+		return ""
+	}
+
+	ts.DecryptedAPIKey = decrypted
+	return decrypted
+}
+
+
 func (ts *CodefreeTokenStorage) Validate() error {
 	var missingFields []string
 

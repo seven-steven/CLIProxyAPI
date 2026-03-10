@@ -2,8 +2,8 @@
 title: "添加 Codefree Provider"
 slug: "add-codefree-provider"
 created: "2026-03-09"
-status: "code-review-fixed"
-stepsCompleted: [1, 2, 3, 4, 5]
+status: "completed"
+stepsCompleted: [1, 2, 3, 4, 5, 6]
 codeReviewIssues:
   - issue: "Config field naming inconsistency"
     severity: "HIGH"
@@ -20,6 +20,43 @@ codeReviewIssues:
   - issue: "Redundant generateRandomCode wrapper"
     severity: "LOW"
     fix: "Removed wrapper, use codefree.GenerateRandomCode directly"
+  - issue: "FetchModels 使用加密的 apiKey 导致 403 错误"
+    severity: "HIGH"
+    fix: "在 codefree_login.go 中调用 FetchModels 前先解密 API Key"
+  - issue: "缺少必需的 HTTP headers 导致 Invalid header params 错误"
+    severity: "HIGH"
+    fix: "在 codefree_executor.go 中添加 Authorization, subService, clientVersion, Accept headers"
+implementationNotes:
+  - feature: "模型别名映射"
+    description: "登录时自动获取模型列表并保存到 codefree.json，请求时将客户端别名映射为真实模型名称"
+    files:
+      - "internal/auth/codefree/token.go (添加 Models 字段)"
+      - "internal/cmd/codefree_login.go (添加 FetchModels 调用)"
+      - "internal/watcher/synthesizer/file.go (解析 models 并存储映射)"
+      - "sdk/cliproxy/auth/oauth_model_alias.go (添加 codefree channel)"
+      - "sdk/cliproxy/service.go (添加 fetchCodefreeModels 方法)"
+      - "internal/runtime/executor/codefree_executor.go (实现 mapModelAlias 方法)"
+  - feature: "HTTP Headers 补全"
+    description: "根据 HAR 文件分析，补全所有必需的 HTTP headers"
+    headers:
+      - "Authorization: Bearer codefree"
+      - "subService: cli_chat"
+      - "clientVersion: 从配置读取，默认 0.3.4"
+      - "Accept: application/json"
+      - "clientType: codefree-cli"
+      - "modelName: 从请求体提取并映射别名"
+      - "userId: 用户 ID"
+      - "apiKey: 解密后的 UUID 格式 API Key"
+verificationResults:
+  - test: "codefree-login"
+    result: "PASS"
+    details: "成功登录并获取 3 个模型 (GLM-4.7, DeepSeek-V3.1-Terminus, GLM-4.6V)"
+  - test: "v1/models"
+    result: "PASS"
+    details: "成功返回 codefree 模型列表"
+  - test: "v1/chat/completions"
+    result: "PASS"
+    details: "成功调用 GLM-4.7 模型并收到响应"
 tech_stack:
   - Go 1.21+
   - OAuth2
@@ -37,11 +74,14 @@ files_to_modify:
   - "internal/config/config.go (修改)"
   - "internal/cmd/codefree_login.go (新建)"
   - "internal/cmd/codefree_refresh.go (新建)"
+  - "sdk/cliproxy/auth/oauth_model_alias.go (修改)"
+  - "sdk/cliproxy/service.go (修改)"
 code_patterns:
   - "Provider 识别: auth 文件 type 字段 → provider 名称"
   - "Credentials 映射: auth.Attributes[api_key/base_url/header:X]"
   - "Executor 复用: OpenAI 兼容 API 复用 openai_compat_executor"
   - "Token 存储: TokenStorage 结构 + SaveTokenToFile 方法"
+  - "模型别名: auth.Runtime 存储别名映射，executor 请求时转换"
 test_patterns:
   - "单元测试: internal/auth/codefree/*_test.go"
   - "集成测试: synthesizer/file_test.go 扩展"
@@ -148,6 +188,9 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
 | 网络重试策略   | 不自动重试，直接返回错误                                       | 网络问题由用户决定是否重试；5xx 错误记录日志但不重试                                                 |
 | 多账户支持     | 单文件模式，不支持多账户                                       | 简化实现；如需多账户可后续扩展                                                                       |
 | SSE 流超时     | 复用 `openai_compat_executor` 的超时设置                       | 与现有实现保持一致                                                                                   |
+| API Key 解密   | AES-192-CBC 解密，密钥/IV 硬编码                               | 从 codefree-cli 二进制逆向提取，服务器返回加密的 apiKey                                              |
+| 解密时机       | 在 synthesizer/file.go 解析时自动解密                          | 透明处理，auth.Attributes["api_key"] 直接存储解密后的 UUID                                           |
+| 解密实现位置   | `internal/auth/codefree/decrypt.go`                            | 独立模块，便于测试和维护                                                                             |
 
 ## Implementation Plan
 
@@ -286,18 +329,29 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
 
 **OAuth 登录**
 
-- [ ] AC1: Given 用户启动 `codefree-login` 命令，when OAuth 流程完成，then access token 已保存到 `{auth_dir}/codefree.json`
-- [ ] AC2: Given 有效的凭据文件，when 解析凭据文件时，then `auth.Attributes` 应包含正确的 `api_key`, `user_id`, `base_url`
-- [ ] AC3: Given 凭据文件存在，when 发送 API 请求时，then `codefree_executor` 正确注入以下 headers:
+- [x] AC1: Given 用户启动 `codefree-login` 命令，when OAuth 流程完成，then access token 已保存到 `{auth_dir}/codefree.json`
+- [x] AC2: Given 有效的凭据文件，when 解析凭据文件时，then `auth.Attributes` 应包含正确的 `api_key`, `user_id`, `base_url`
+- [x] AC3: Given 凭据文件存在，when 发送 API 请求时，then `codefree_executor` 正确注入以下 headers:
   - `apiKey` (从 `auth.Attributes["api_key"]`)
   - `userId` (从 `auth.Attributes["user_id"]`)
   - `modelName` (从请求体提取)
   - `clientType` (固定值 `codefree-cli`)
-- [ ] AC4: Given 用户触发模型列表刷新，when 调用 `FetchModels` 方法时，then 返回有效的模型列表并更新到注册表
+  - `Authorization` (固定值 `Bearer codefree`)
+  - `subService` (固定值 `cli_chat`)
+  - `clientVersion` (从配置读取，默认 `0.3.4`)
+  - `Accept` (固定值 `application/json`)
+- [x] AC4: Given 用户触发模型列表刷新，when 调用 `FetchModels` 方法时，then 返回有效的模型列表并更新到注册表
 - [ ] AC5: Given Token 过期（检测到 401 响应），then 返回友好的错误提示，引导用户重新登录
-- [ ] AC6: Given 请求体无 `model` 字段时，then 跳过 `modelName` header 设置，请求仍能正常发送
-- [ ] AC7: Given OAuth 回调端口被占用，when 启动登录命令时，then 提示用户手动输入 OAuth code
-- [ ] AC8: Given 凭据文件缺失必填字段 (`type`, `apikey`, `id_token`, `baseUrl`)，when 解析文件时，then 返回清晰的错误提示说明缺失字段
+- [x] AC6: Given 请求体无 `model` 字段时，then 跳过 `modelName` header 设置，请求仍能正常发送
+- [x] AC7: Given OAuth 回调端口被占用，when 启动登录命令时，then 提示用户手动输入 OAuth code
+- [x] AC8: Given 凭据文件缺失必填字段 (`type`, `apikey`, `id_token`, `baseUrl`)，when 解析文件时，then 返回清晰的错误提示说明缺失字段
+
+**模型别名映射 (2026-03-11 新增)**
+
+- [x] AC9: Given 登录成功，when 调用 FetchModels API 时，then 模型列表保存到 `codefree.json` 的 `models` 字段
+- [x] AC10: Given 凭据文件包含 models 字段，when synthesizer 解析时，then `auth.Runtime` 存储别名到真实名称的映射
+- [x] AC11: Given 客户端请求使用别名 (如 `glm-4.7`)，when executor 处理请求时，then `modelName` header 设置为真实名称 (如 `GLM-4.7`)
+- [x] AC12: Given 配置文件未设置 `codefree-cli-version`，when executor 设置 headers 时，then `clientVersion` 使用默认值 `0.3.4`
 
 ## Additional Context
 
@@ -398,9 +452,42 @@ codefree:
    - **重要**: 保存凭据时，`access_token` 字段应使用 `ori_session_id` 的值（UUID 格式），而非 JWT 格式的 `access_token`
 2. **API Key 获取**: `GET https://www.srdcloud.cn/api/acbackend/usermanager/v1/users/apikey`
    - Headers: `sessionId` (ori_session_id), `userId` (id_token/uid), `projectId` (固定值 `"0"`)
-   - 返回: `encryptedApiKey`
+   - 返回: `encryptedApiKey`（**加密的**，需解密后使用）
    - **此步骤必须在 OAuth token 交换后立即执行**
    - **注意**: `projectId` 必须是 `"0"`，不是 `"CLI"`
+
+**API Key 解密机制 (重要发现):**
+
+服务器返回的 `encryptedApiKey` 是加密的 Base64 字符串，需要解密后才能作为 UUID 格式的 `apiKey` 使用：
+
+- **算法**: AES-192-CBC
+- **密钥**: `Xtpa6sS&+D.NAo%CP8LA:7pk` (24 字节，从 codefree-cli 二进制提取)
+- **IV**: `%1KJIrl3!XUxr04V` (16 字节，硬编码)
+- **密文格式**: Base64 编码的 48 字节密文（**无嵌入 IV**）
+- **明文格式**: 36 字节 UUID 格式 (如 `3983ce76-288d-4725-9a5a-0fee50477244`)
+
+**解密流程:**
+
+```
+1. Base64 解码 encryptedApiKey → 48 字节密文
+2. AES-192-CBC 解密 (使用固定 IV) → 36 字节明文 + 12 字节 PKCS#7 padding
+3. 移除 PKCS#7 padding → 36 字节 UUID 字符串
+4. 验证 UUID 格式 (正则: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)
+```
+
+**示例:**
+
+```
+加密: 0Wt6fhOXuNpD9JJ6c94Xw+B95JaflyXkPqOWJlQ/9xI4fA9PwM/YgUyHDzZfW9ru
+解密: 3983ce76-288d-4725-9a5a-0fee50477244
+```
+
+**实现文件:**
+
+- `internal/auth/codefree/decrypt.go` - `DecryptAPIKey()` 函数
+- `internal/auth/codefree/token.go` - `GetDecryptedAPIKey()` 方法
+- `internal/watcher/synthesizer/file.go` - 自动解密并存储到 `auth.Attributes["api_key"]`
+
 3. **模型列表**: `GET https://www.srdcloud.cn/api/acbackend/modelmgr/v1/clients/CLI/versions/{version}`
    - Headers: `userId`, `apiKey`
    - 返回: `{"data":[{"modelName":"...","manufacturer":"...","maxTokens":...}],...}`

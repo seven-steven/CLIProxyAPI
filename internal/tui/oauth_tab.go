@@ -26,6 +26,7 @@ var oauthProviders = []oauthProvider{
 	{"Qwen", "qwen-auth-url", "🟨"},
 	{"Kimi", "kimi-auth-url", "🟫"},
 	{"IFlow", "iflow-auth-url", "⬜"},
+	{"CodeFree", "codefree-auth-url", "🔷"},
 }
 
 // oauthTabModel handles OAuth login flows.
@@ -286,6 +287,8 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "kimi"
 				case "iflow-auth-url":
 					providerKey = "iflow"
+				case "codefree-auth-url":
+					providerKey = "codefree"
 				}
 				break
 			}

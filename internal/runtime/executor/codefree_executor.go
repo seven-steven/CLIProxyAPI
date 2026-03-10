@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -67,13 +68,31 @@ func (e *CodefreeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.
 		if modelName != "" {
 			// 移除可能的 thinking suffix
 			modelName = thinking.ParseSuffix(modelName).ModelName
+
+			// 映射别名到真实名称
+			realName := e.mapModelAlias(auth, modelName)
+			if realName != "" {
+				modelName = realName
+			}
+
 			req.Header.Set("modelName", modelName)
 		}
 		// 如果提取失败，静默跳过（根据技术规范）
 	}
 
-	// 设置固定的 clientType header
+	// 设置固定的 headers（根据 HAR 文件分析）
 	req.Header.Set("clientType", "codefree-cli")
+
+	// 从配置读取 clientVersion，默认为 0.3.4
+	cliVersion := "0.3.4"
+	if e.cfg != nil && e.cfg.CodefreeCliVersion != "" {
+		cliVersion = e.cfg.CodefreeCliVersion
+	}
+	req.Header.Set("clientVersion", cliVersion)
+
+	req.Header.Set("subService", "cli_chat")
+	req.Header.Set("Authorization", "Bearer codefree")
+	req.Header.Set("Accept", "application/json")
 
 	// 应用自定义 headers（如果有 header: 前缀的属性）
 	if auth != nil {
@@ -321,4 +340,30 @@ func (e *CodefreeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.A
 	// 执行请求
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
+}
+
+// mapModelAlias 将客户端模型别名映射为上游真实模型名称
+func (e *CodefreeExecutor) mapModelAlias(auth *cliproxyauth.Auth, alias string) string {
+	if auth == nil || auth.Runtime == nil {
+		return ""
+	}
+
+	mapping, ok := auth.Runtime.(*synthesizer.CodefreeModelMapping)
+	if !ok || mapping == nil || mapping.AliasToName == nil {
+		return ""
+	}
+
+	// 尝试精确匹配
+	if name, found := mapping.AliasToName[alias]; found {
+		return name
+	}
+
+	// 尝试小写匹配
+	lowerAlias := strings.ToLower(alias)
+	if name, found := mapping.AliasToName[lowerAlias]; found {
+		return name
+	}
+
+	// 未找到映射，返回空（使用原始名称）
+	return ""
 }

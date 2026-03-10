@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codefree"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -154,8 +155,15 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	switch provider {
 	case "codefree":
 		// Map codefree-specific fields to auth attributes
+		// Decrypt the encrypted apikey to get the actual UUID format apiKey
 		if apikey, ok := metadata["apikey"].(string); ok && apikey != "" {
-			a.Attributes["api_key"] = apikey
+			decryptedKey, err := codefree.DecryptAPIKey(apikey)
+			if err == nil && decryptedKey != "" {
+				a.Attributes["api_key"] = decryptedKey
+			} else {
+				// Fallback to encrypted key if decryption fails
+				a.Attributes["api_key"] = apikey
+			}
 		}
 		if idToken, ok := metadata["id_token"].(string); ok && idToken != "" {
 			a.Attributes["user_id"] = idToken
@@ -165,6 +173,26 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		}
 		// Set fixed clientType header
 		a.Attributes["header:clientType"] = "codefree-cli"
+
+		// 解析并存储模型别名映射
+		if modelsRaw, ok := metadata["models"]; ok {
+			if modelInfos, ok := modelsRaw.([]interface{}); ok {
+				aliasMap := make(map[string]string)
+				for _, m := range modelInfos {
+					if modelMap, ok := m.(map[string]interface{}); ok {
+						if name, ok := modelMap["modelName"].(string); ok && name != "" {
+							// 使用小写作为别名
+							alias := strings.ToLower(name)
+							aliasMap[alias] = name
+						}
+					}
+				}
+				if len(aliasMap) > 0 {
+					// 存储到 auth.Runtime 中供 executor 使用
+					a.Runtime = &CodefreeModelMapping{AliasToName: aliasMap}
+				}
+			}
+		}
 
 	case "gemini-cli":
 		if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {
@@ -336,4 +364,9 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// CodefreeModelMapping 存储模型别名到真实名称的映射
+type CodefreeModelMapping struct {
+	AliasToName map[string]string
 }
