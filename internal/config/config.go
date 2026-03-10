@@ -121,6 +121,10 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// CodefreeCliVersion defines the CLI version for Codefree model list API.
+	// Default is "0.3.4".
+	CodefreeCliVersion string `yaml:"codefree-cli-version" json:"codefree-cli-version"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 

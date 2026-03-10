@@ -112,6 +112,40 @@ func CountAuthFiles[T any](ctx context.Context, store interface {
 	return len(entries)
 }
 
+// ProviderCounter is an interface for auth entries that expose a Provider field.
+type ProviderCounter interface {
+	GetProvider() string
+}
+
+// CountAuthFilesByProvider returns a map of provider -> count for auth records.
+// Entries that don't implement ProviderCounter are counted under "other".
+func CountAuthFilesByProvider[T any](ctx context.Context, store interface {
+	List(context.Context) ([]T, error)
+}) map[string]int {
+	result := make(map[string]int)
+	if store == nil {
+		return result
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entries, err := store.List(ctx)
+	if err != nil {
+		log.Debugf("CountAuthFilesByProvider: failed to list auth records: %v", err)
+		return result
+	}
+	for _, entry := range entries {
+		provider := "other"
+		if pc, ok := any(entry).(ProviderCounter); ok {
+			if p := pc.GetProvider(); p != "" {
+				provider = p
+			}
+		}
+		result[provider]++
+	}
+	return result
+}
+
 // WritablePath returns the cleaned WRITABLE_PATH environment variable when it is set.
 // It accepts both uppercase and lowercase variants for compatibility with existing conventions.
 func WritablePath() string {

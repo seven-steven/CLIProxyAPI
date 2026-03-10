@@ -153,6 +153,15 @@ func (a *Auth) Clone() *Auth {
 	return &copyAuth
 }
 
+// GetProvider returns the provider name for this auth entry.
+// This method implements the ProviderCounter interface for counting auth entries by provider.
+func (a *Auth) GetProvider() string {
+	if a == nil {
+		return ""
+	}
+	return a.Provider
+}
+
 func stableAuthIndex(seed string) string {
 	seed = strings.TrimSpace(seed)
 	if seed == "" {

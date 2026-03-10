@@ -2,8 +2,24 @@
 title: "添加 Codefree Provider"
 slug: "add-codefree-provider"
 created: "2026-03-09"
-status: "ready-for-dev"
-stepsCompleted: [1, 2, 3, 4]
+status: "code-review-fixed"
+stepsCompleted: [1, 2, 3, 4, 5]
+codeReviewIssues:
+  - issue: "Config field naming inconsistency"
+    severity: "HIGH"
+    fix: "Renamed CodefreeCLIVersion to CodefreeCliVersion (Go idiomatic)"
+  - issue: "Missing executor tests"
+    severity: "HIGH"
+    fix: "Added codefree_executor_test.go with 6 test functions"
+  - issue: "Missing OAuth server tests"
+    severity: "HIGH"
+    fix: "Added oauth_server_test.go with 17 test functions"
+  - issue: "Hardcoded CLI in URL"
+    severity: "MEDIUM"
+    fix: "Changed ModelsURLFormat to use ProjectID constant"
+  - issue: "Redundant generateRandomCode wrapper"
+    severity: "LOW"
+    fix: "Removed wrapper, use codefree.GenerateRandomCode directly"
 tech_stack:
   - Go 1.21+
   - OAuth2
@@ -123,7 +139,8 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
 | 端口冲突处理   | 引导用户手动输入 OAuth code                                    | 避免复杂的端口重试逻辑，用户体验更可控                                                               |
 | 凭据文件写入   | 原子写入（temp file + rename）                                 | 防止部分写入导致凭据损坏                                                                             |
 | 凭据文件校验   | 必填字段校验 (`type`, `apikey`, `id_token`, `baseUrl`)         | 提前发现格式问题，提供清晰错误提示                                                                   |
-| projectId      | 固定值 `"CLI"`                                                 | CodeFree CLI 客户端的固定标识符                                                                      |
+| access_token   | 使用 `ori_session_id` (UUID) 而非 JWT 格式的 `access_token`    | 官方客户端使用 `ori_session_id`，API Key 接口需要 UUID 格式的 sessionId                              |
+| projectId      | API Key 接口用 `"0"`，模型列表 URL 用 `"CLI"`                  | 两个接口使用不同的 projectId 值，参考 HAR 文件分析                                                   |
 | 过期检测       | 基于 `expires_in` + `created_at` 计算，不主动阻止请求          | 过期后服务端返回 401，由 executor 检测并提示                                                         |
 | 模型刷新命令   | 独立的 `codefree-refresh` CLI 命令                             | 用户主动触发，避免不必要的 API 调用                                                                  |
 | 401 检测位置   | 在 `CodefreeExecutor.execute` 方法中检测                       | 返回特定错误类型 `ErrTokenExpired`，上层处理提示                                                     |
@@ -138,18 +155,18 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
 
 **Phase 1: Auth 模块 (internal/auth/codefree/)**
 
-- [ ] **Task 1**: 创建 `internal/auth/codefree/filename.go`
+- [x] **Task 1**: 创建 `internal/auth/codefree/filename.go`
   - File: `internal/auth/codefree/filename.go`
   - Action: 创建 `CodefreeCredentialsFilename` 常量，值为 `"codefree.json"`
   - Notes: 参考 `claude/filename.go`，与其他 provider 保持命名一致
-- [ ] **Task 1.1**: 创建 `internal/auth/codefree/errors.go`
+- [x] **Task 1.1**: 创建 `internal/auth/codefree/errors.go`
   - File: `internal/auth/codefree/errors.go`
   - Action: 定义错误类型:
     - `ErrTokenExpired`: Token 过期错误
     - `ErrInvalidCredentials`: 凭据格式错误
     - `ErrAuthTimeout`: OAuth 超时错误
   - Notes: 使用 `errors.Is()` 兼容的模式
-- [ ] **Task 2**: 创建 `internal/auth/codefree/token.go`
+- [x] **Task 2**: 创建 `internal/auth/codefree/token.go`
   - File: `internal/auth/codefree/token.go`
   - Action: 创建 `CodefreeTokenStorage` 结构体
   - Action: 实现 `saveTokenToFile` 方法（**原子写入**: 写入临时文件后 rename，避免部分写入导致凭据损坏）
@@ -160,7 +177,7 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
   - Action: 实现 `GetExpiresAt` 方法（返回过期时间的 Unix 时间戳）
   - Action: 定义常量: `DefaultCredentialsFilename`, `CodefreeCredentialsFile`
   - Notes: 字段: `type`, `access_token`, `id_token` (userId), `apikey`, `expires_in`, `baseUrl`, `created_at` (写入时自动设置)
-- [ ] **Task 3**: 创建 `internal/auth/codefree/oauth_server.go`
+- [x] **Task 3**: 创建 `internal/auth/codefree/oauth_server.go`
   - File: `internal/auth/codefree/oauth_server.go`
   - Action: 创建 `CodefreeOAuthServer` 结构体
   - Action: 实现 `Start` 方法（启动回调服务器）
@@ -177,22 +194,24 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
   - Action: 实现 `BuildStateParam` 方法（构造 base64 编码的 state 参数）
   - Action: **手动模式 fallback**: 若用户选择 `--manual`，跳过回调服务器，直接提示输入 code
   - Notes: 参考 `claude/oauth_server.go`，回调地址格式 `http://127.0.0.1:{random_port}/oauth2callback`
-- [ ] **Task 4**: 创建 `internal/auth/codefree/codefree_auth.go`
+- [x] **Task 4**: 创建 `internal/auth/codefree/codefree_auth.go`
   - File: `internal/auth/codefree/codefree_auth.go`
   - Action: 创建 `CodefreeAuth` 结构体
   - Action: 定义 `ModelInfo` 结构体（字段: `Name`, `Manufacturer`, `MaxTokens`）
   - Action: 定义 OAuth 常量: `clientID`, `clientSecret`, `redirectURI`
+  - Action: 定义 `APIKeyProjectID = "0"` 常量（用于 API Key 接口）
   - Action: 实现 `GenerateAuthURL(state string)` 方法
     - 返回完整授权 URL（包含 client_id, redirect_uri, state 等参数）
   - Action: 实现 `ExchangeCodeForTokens` 方法（OAuth code → access_token + id_token）
+    - **重要**: 使用 `ori_session_id` (UUID) 作为 `access_token`，而非 JWT 格式的 `access_token`
   - Action: 实现 `FetchAPIKey` 方法（**关键步骤**: 调用 `/api/acbackend/usermanager/v1/users/apikey` 获取 encryptedApiKey）
-    - Headers: `sessionId` (access_token), `userId` (id_token), `projectId` (固定值 `CLI`)
+    - Headers: `sessionId` (ori_session_id), `userId` (id_token/uid), `projectId` (固定值 `"0"`)
   - Action: 实现 `FetchModels` 方法（获取模型列表）
     - 返回值: `[]ModelInfo`
     - 使用配置的 `codefree.cli_version` 构造 API 路径
-  - Notes: OAuth 常量硬编码，`projectId` 固定为 `"CLI"`
+  - Notes: OAuth 常量硬编码，API Key 接口 `projectId` 为 `"0"`，模型列表 URL 使用 `"CLI"`
     **Phase 2: Synthesizer 集成**
-- [ ] **Task 5**: 修改 `internal/watcher/synthesizer/file.go`
+- [x] **Task 5**: 修改 `internal/watcher/synthesizer/file.go`
   - File: `internal/watcher/synthesizer/file.go`
   - Action: 在 `synthesizeFileAuths` 函数中添加 codefree provider 处理
   - Action: 映射 `apikey` → `auth.Attributes["api_key"]`
@@ -201,7 +220,7 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
   - Action: 设置 `header:clientType` = `codefree-cli`
   - Notes: 添加 `case "codefree":` 处理逻辑
     **Phase 3: Executor 实现**
-- [ ] **Task 6**: 创建 `internal/runtime/executor/codefree_executor.go`
+- [x] **Task 6**: 创建 `internal/runtime/executor/codefree_executor.go`
   - File: `internal/runtime/executor/codefree_executor.go`
   - Action: 创建 `CodefreeExecutor` 结构体，**组合持有** `*Openai_compat_executor`（而非嵌入）
   - Action: 实现 `Identifier()` 方法，返回 `"codefree"`
@@ -213,17 +232,17 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
   - Action: **401 检测**: 在 execute 方法中检测 401 响应，返回特定错误类型 `ErrTokenExpired`
     - `ErrTokenExpired` 定义在 `internal/auth/codefree/errors.go` 中
   - Notes: 组合模式避免 Go 嵌入的方法集复杂性，更清晰的委托关系
-- [ ] **Task 6.1**: 注册 CodefreeExecutor
+- [x] **Task 6.1**: 注册 CodefreeExecutor
   - File: `internal/runtime/executor/registry.go`（或对应的注册文件）
   - Action: 在 executor 注册表中添加 codefree provider → CodefreeExecutor 的映射
   - Notes: 参考 `openai_compat_executor` 的注册方式
     **Phase 4: 配置与命令**
-- [ ] **Task 7**: 修改 `internal/config/config.go`
+- [x] **Task 7**: 修改 `internal/config/config.go`
   - File: `internal/config/config.go`
   - Action: 添加 `CodefreeCLIVersion` 字段
   - Action: 添加默认值 `"0.3.4"`
   - Notes: 添加到 `Config` 结构体
-- [ ] **Task 8**: 创建 `internal/cmd/codefree_login.go`
+- [x] **Task 8**: 创建 `internal/cmd/codefree_login.go`
   - File: `internal/cmd/codefree_login.go`
   - Action: 创建 `codefree-login` 命令
   - Action: 实现 `run` 方法（触发 OAuth 流程）
@@ -250,7 +269,7 @@ auth.Attributes["header:clientType"] = "codefree-cli"  // 固定 header
     - 读取用户输入的 code，继续 OAuth 流程
   - Action: 集成到现有的命令系统
   - Notes: 参考 `anthropic_login.go`
-- [ ] **Task 8.1**: 创建 `internal/cmd/codefree_refresh.go`
+- [x] **Task 8.1**: 创建 `internal/cmd/codefree_refresh.go`
   - File: `internal/cmd/codefree_refresh.go`
   - Action: 创建 `codefree-refresh` 命令（触发模型列表刷新）
   - Action: **认证方式**: 从 `{auth_dir}/codefree.json` 读取凭据
@@ -369,11 +388,19 @@ codefree:
 
 1. **OAuth Token 端点**: `GET https://www.srdcloud.cn/login/oauth/access_token`
    - 参数: `grant_type=authorization_code`, `client_id`, `client_secret`, `code`, `redirect_uri`
-   - 返回: `access_token`, `id_token` (userId), `expires_in`, `ori_session_id`
+   - 返回字段:
+     - `access_token`: JWT 格式（**不使用**）
+     - `ori_session_id`: UUID 格式（**实际使用的 access_token**）
+     - `id_token`: 用户 ID（可能为空，需 fallback 到 `uid` 字段）
+     - `uid`: 用户 ID（当 `id_token` 为空时使用）
+     - `ori_token`: 另一个 UUID 格式 token
+     - `expires_in`: 过期时间（秒）
+   - **重要**: 保存凭据时，`access_token` 字段应使用 `ori_session_id` 的值（UUID 格式），而非 JWT 格式的 `access_token`
 2. **API Key 获取**: `GET https://www.srdcloud.cn/api/acbackend/usermanager/v1/users/apikey`
-   - Headers: `sessionId` (access_token), `userId` (id_token), `projectId` (固定值 `"CLI"`)
+   - Headers: `sessionId` (ori_session_id), `userId` (id_token/uid), `projectId` (固定值 `"0"`)
    - 返回: `encryptedApiKey`
    - **此步骤必须在 OAuth token 交换后立即执行**
+   - **注意**: `projectId` 必须是 `"0"`，不是 `"CLI"`
 3. **模型列表**: `GET https://www.srdcloud.cn/api/acbackend/modelmgr/v1/clients/CLI/versions/{version}`
    - Headers: `userId`, `apiKey`
    - 返回: `{"data":[{"modelName":"...","manufacturer":"...","maxTokens":...}],...}`
@@ -415,8 +442,8 @@ codefree:
 5. 用户授权后，CodeFree 重定向到 redirect_uri
 6. CodeFree 服务端解析 state，向本地回调服务器发送请求
 7. 本地服务器验证 randomCode，提取 code 参数
-8. 调用 OAuth Token 端点 → 获取 access_token, id_token
-9. 调用 API Key 端点 → 获取 apikey
+8. 调用 OAuth Token 端点 → 获取 ori_session_id (作为 access_token), id_token/uid
+9. 调用 API Key 端点 (projectId="0") → 获取 apikey
 10. 保存完整凭据到 {auth_dir}/codefree.json
 ```
 
@@ -424,7 +451,7 @@ codefree:
 
 ```json
 {
-  "access_token": "session-id-uuid",
+  "access_token": "ori_session_id (UUID格式，非JWT)",
   "token_type": "bearer",
   "expires_in": 86400,
   "id_token": "userId",

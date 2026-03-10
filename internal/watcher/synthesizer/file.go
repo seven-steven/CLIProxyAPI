@@ -149,7 +149,24 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		}
 	}
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
-	if provider == "gemini-cli" {
+
+	// Handle provider-specific attribute mappings
+	switch provider {
+	case "codefree":
+		// Map codefree-specific fields to auth attributes
+		if apikey, ok := metadata["apikey"].(string); ok && apikey != "" {
+			a.Attributes["api_key"] = apikey
+		}
+		if idToken, ok := metadata["id_token"].(string); ok && idToken != "" {
+			a.Attributes["user_id"] = idToken
+		}
+		if baseURL, ok := metadata["baseUrl"].(string); ok && baseURL != "" {
+			a.Attributes["base_url"] = baseURL
+		}
+		// Set fixed clientType header
+		a.Attributes["header:clientType"] = "codefree-cli"
+
+	case "gemini-cli":
 		if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {
 			for _, v := range virtuals {
 				ApplyAuthExcludedModelsMeta(v, cfg, perAccountExcluded, "oauth")
@@ -160,6 +177,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			return out
 		}
 	}
+
 	return []*coreauth.Auth{a}
 }
 
